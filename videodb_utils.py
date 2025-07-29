@@ -1,13 +1,9 @@
 import os
 from typing import Optional, Tuple, List, Dict
-import streamlit as st
 import videodb
 
-
 def connect_videodb(api_key: str):
-    conn = videodb.connect(api_key=api_key)
-    return conn
-
+    return videodb.connect(api_key=api_key)
 
 def ensure_collection(conn, name: str):
     try:
@@ -15,14 +11,11 @@ def ensure_collection(conn, name: str):
     except Exception:
         return conn.get_collection(name)
 
-
 def upload_video_any(collection, url: Optional[str] = None, file=None) -> Tuple[Optional[object], Optional[str]]:
     if url:
         vid = collection.upload(url=url)
         return vid, url
     if file is not None:
-        # Streamlit uploads give file-like object. Save then upload path.
-        # But VideoDB can take file-like in some versions; use path for safety.
         tmp_path = os.path.join(os.getcwd(), f"uploaded_{file.name}")
         with open(tmp_path, "wb") as f:
             f.write(file.read())
@@ -30,16 +23,13 @@ def upload_video_any(collection, url: Optional[str] = None, file=None) -> Tuple[
         return vid, None
     raise ValueError("Provide a YouTube URL or upload a file.")
 
-
 def ensure_index_spoken(video):
     try:
         video.index_spoken_words()
     except Exception as e:
         if "already" in str(e).lower():
-            pass
-        else:
-            raise
-
+            return
+        raise
 
 def get_transcript_text_safe(video) -> str:
     try:
@@ -51,15 +41,12 @@ def get_transcript_text_safe(video) -> str:
         except Exception:
             return ""
 
-
 def build_embed_player(url: Optional[str], start: int = 0) -> str:
-    # If we have a YouTube URL, embed with timestamp. Otherwise show a message.
-    if url and "youtube.com" in url:
+    if url and "youtube.com" in url and "v=" in url:
         vid_id = url.split("v=")[-1].split("&")[0]
         src = f"https://www.youtube.com/embed/{vid_id}?start={int(start)}&autoplay=0"
         return f'<iframe width="640" height="360" src="{src}" frameborder="0" allowfullscreen></iframe>'
-    return "<p>No embeddable URL available. If this is a file upload, try the Highlight Reel tab to generate a stream.</p>"
-
+    return "<p>No embeddable URL available. If this is a file upload, use Highlight Reel to generate a stream.</p>"
 
 def shots_table_html(url: Optional[str], segments: List[Dict], title: str = "Top matches") -> str:
     if not segments:
