@@ -18,29 +18,30 @@ from videodb_utils import (
     list_collections_safe,
     list_videos_safe,
 )
-
 from ai_providers import setup_ai, ai_answer
 
 
 st.set_page_config(page_title="VideoRAG by ibrahim", page_icon="🎬", layout="wide")
 
-# session defaults
-for k, v in {
+# ---------------- Session defaults ----------------
+defaults = {
+    "video_obj": None,                 # <── keep the actual Video object here
     "video_id": None,
     "video_url": None,
     "video_collection_name": None,
     "debug": False,
-}.items():
+}
+for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# - Secrets
+# ---------------- Secrets/keys ----------------
 VIDEODB_API_KEY = st.secrets.get("VIDEODB_API_KEY", os.getenv("VIDEODB_API_KEY", ""))
 GEMINI_API_KEY  = st.secrets.get("GEMINI_API_KEY",  os.getenv("GEMINI_API_KEY",  ""))
 OPENAI_API_KEY  = st.secrets.get("OPENAI_API_KEY",  os.getenv("OPENAI_API_KEY",  ""))
 GROQ_API_KEY    = st.secrets.get("GROQ_API_KEY",    os.getenv("GROQ_API_KEY",    ""))
 
-# - Sidebar
+# ---------------- Sidebar ----------------
 st.sidebar.title("Settings")
 AI_PROVIDER = st.sidebar.selectbox("AI provider", ["gemini", "openai", "groq", "none"], index=0)
 COLLECTION_NAME = st.sidebar.text_input("Collection name", value="educational_videos")
@@ -49,11 +50,11 @@ PREVIEW_CHARS = st.sidebar.slider("Preview chars", 80, 400, 220, 20)
 st.sidebar.checkbox("Show debug", value=st.session_state["debug"], key="debug")
 st.sidebar.caption("Keys are read from Streamlit secrets. You only need VideoDB and Gemini.")
 
-# - Header
+# ---------------- Header ----------------
 st.title("VideoRAG - Conversational Video Learning")
 st.caption("Upload or link a video. Index transcript. Ask questions. See segments, quizzes, and highlight reels.")
 
-# - Connect
+# ---------------- Connect to VideoDB ----------------
 if not VIDEODB_API_KEY:
     st.warning("Add your VideoDB API key to Streamlit Secrets.")
     st.stop()
@@ -64,7 +65,7 @@ except Exception as e:
     st.error(f"VideoDB connection error: {e}")
     st.stop()
 
-# A collection object for new ingests only
+# Use this collection for NEW ingests only
 ingest_collection = ensure_collection(conn, COLLECTION_NAME)
 
 if st.session_state["debug"]:
@@ -72,12 +73,12 @@ if st.session_state["debug"]:
         "video_id": st.session_state["video_id"],
         "video_url": st.session_state["video_url"],
         "video_collection_name": st.session_state["video_collection_name"],
+        "has_video_obj": st.session_state["video_obj"] is not None,
         "sidebar_collection_name": COLLECTION_NAME,
     })
 
-# helpers
 def get_active_collection():
-    """Open the exact collection used for the active video."""
+    """Open the collection used for the active video (if known)."""
     name = st.session_state.get("video_collection_name")
     if not name:
         return None
@@ -87,32 +88,33 @@ def get_active_collection():
         return None
 
 def get_current_video():
-    """Resolve the active video robustly."""
+    """
+    Robust resolver:
+    1) If we still have the actual object, use it.
+    2) Else try to fetch by id from the active collection (if available).
+    """
+    if st.session_state.get("video_obj") is not None:
+        return st.session_state["video_obj"]
+
     vid_id = st.session_state.get("video_id")
     if not vid_id:
         return None
-    # 1) try connection-level first
+    coll = get_active_collection()
+    if not coll:
+        return None
     try:
-        return conn.get_video(vid_id)
-    except Exception as e1:
+        return coll.get_video(vid_id)
+    except Exception as e:
         if st.session_state["debug"]:
-            st.sidebar.warning(f"conn.get_video failed: {e1}")
-        # 2) fallback to collection-level if we know the collection
-        try:
-            coll = get_active_collection()
-            if coll:
-                return coll.get_video(vid_id)
-        except Exception as e2:
-            if st.session_state["debug"]:
-                st.sidebar.warning(f"collection.get_video failed: {e2}")
-    return None
+            st.sidebar.warning(f"collection.get_video failed: {e}")
+        return None
 
-# tabs
+# ---------------- Tabs ----------------
 tab_upload, tab_search, tab_quiz, tab_reel, tab_transcript, tab_library = st.tabs(
     ["Upload or Link", "Ask & Search", "Quiz", "Highlight Reel", "Transcript", "Library"]
 )
 
-# Upload or Link
+# ---------------- Upload or Link ----------------
 with tab_upload:
     st.subheader("Add video")
     source_type = st.radio("Choose source", ["YouTube URL", "Local upload"], horizontal=True)
@@ -132,32 +134,35 @@ with tab_upload:
         else:
             with st.spinner("Uploading and indexing..."):
                 try:
-                    # upload into the sidebar collection name
+                    # Upload into the sidebar collection name
                     video, working_url = upload_video_any(ingest_collection, url=chosen_url, file=uploaded_file)
                     if not video:
                         st.error("Upload failed. Try another URL or file.")
                         st.stop()
 
-                    # save state right away to survive reruns
+                    # Save to session immediately (object + metadata)
+                    st.session_state["video_obj"] = video                   # <── keep object
                     st.session_state["video_id"] = video.id
                     st.session_state["video_url"] = working_url
                     st.session_state["video_collection_name"] = COLLECTION_NAME
 
-                    # now index
+                    # Index transcript for search
                     ensure_index_spoken(video)
 
                     st.success("Indexed and saved as active video.")
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-    if st.session_state.get("video_id"):
-        st.info(f"Active video id: {st.session_state['video_id']}")
+    # Show the active player if we have something
+    active_video = get_current_video()
+    if active_video is not None:
+        st.info(f"Active video id: {st.session_state.get('video_id')}")
         st.components.v1.html(
             build_embed_player(st.session_state.get("video_url"), start=0),
             height=380,
         )
 
-# Ask & Search
+# ---------------- Ask & Search ----------------
 with tab_search:
     st.subheader("Ask questions and jump to exact moments")
     video = get_current_video()
@@ -210,7 +215,7 @@ with tab_search:
                     height=380,
                 )
 
-# Quiz
+# ---------------- Quiz ----------------
 with tab_quiz:
     st.subheader("Generate a short quiz")
     video = get_current_video()
@@ -247,7 +252,7 @@ with tab_quiz:
                 else:
                     st.warning("AI failed. Try again or switch provider.")
 
-# Highlight Reel
+# ---------------- Highlight Reel ----------------
 with tab_reel:
     st.subheader("Build a highlight reel")
     video = get_current_video()
@@ -294,7 +299,7 @@ with tab_reel:
                         height=380,
                     )
 
-# Transcript
+# ---------------- Transcript ----------------
 with tab_transcript:
     st.subheader("Transcript")
     video = get_current_video()
@@ -310,7 +315,7 @@ with tab_transcript:
         st.download_button("Download transcript txt", data=text, file_name="transcript.txt", mime="text/plain")
         st.text_area("Preview", value=text[:5000], height=360)
 
-# Library
+# ---------------- Library ----------------
 with tab_library:
     st.subheader("Your library")
     st.caption("Pick a collection and load a video from your account.")
@@ -332,19 +337,21 @@ with tab_library:
             idx = labels.index(pick)
             picked_video = vids[idx]
             if st.button("Load as active"):
+                # Save object & metadata
+                st.session_state["video_obj"] = picked_video
                 st.session_state["video_id"] = getattr(picked_video, "id", None)
                 st.session_state["video_url"] = getattr(picked_video, "source_url", None)
                 st.session_state["video_collection_name"] = getattr(chosen, "name", getattr(chosen, "id", COLLECTION_NAME))
                 st.success("Loaded. Go to Ask & Search tab.")
         else:
-            st.info("This SDK does not expose list_videos. Paste a video id below.")
-
+            st.info("SDK does not expose listing videos for this collection. Paste a video id below.")
     else:
-        st.info("This SDK does not expose list_collections. Paste a video id below.")
+        st.info("SDK does not expose listing collections. Paste a video id below.")
 
     manual_id = st.text_input("Or paste a video id")
     manual_coll = st.text_input("Collection name for that id", value=COLLECTION_NAME)
     if st.button("Load id"):
+        st.session_state["video_obj"] = None  # we don't have the object here
         st.session_state["video_id"] = manual_id.strip() or None
         st.session_state["video_url"] = None
         st.session_state["video_collection_name"] = manual_coll.strip() or None
