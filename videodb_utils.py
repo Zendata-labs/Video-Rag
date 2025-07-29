@@ -84,3 +84,22 @@ def shots_table_html(url: Optional[str], segments: List[Dict], title: str = "Top
         + "</table>"
     )
     return html
+
+# - best effort listing helpers (some SDKs expose these, some do not)
+def list_collections_safe(conn):
+    try:
+        return conn.list_collections()
+    except Exception:
+        try:
+            return conn.get_collections()
+        except Exception:
+            return []
+
+def list_videos_safe(collection):
+    try:
+        return collection.list_videos()
+    except Exception:
+        try:
+            return collection.get_videos()
+        except Exception:
+            return []
